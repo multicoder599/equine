@@ -5,13 +5,17 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 
+// Cloudinary for permanent image storage on Render
+const { v2: cloudinary } = require('cloudinary');
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
 const app = express();
 const PORT = process.env.PORT || 10000; 
 
 // --- PRODUCTION MIDDLEWARE ---
 const allowedOrigins = [
     'http://localhost:3000', 
-    'http://127.0.0.1:5500', // Common for VS Code Live Server
+    'http://127.0.0.1:5500', 
     'https://equine-4ya0.onrender.com'
 ];
 
@@ -27,62 +31,127 @@ app.use(cors({
 
 app.use(express.json()); 
 app.use(express.static(path.join(__dirname, 'public'))); 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// --- IMAGE UPLOAD ENGINE ---
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/'); 
-    },
-    filename: (req, file, cb) => {
-        cb(null, 'receipt-' + Date.now() + path.extname(file.originalname));
+// --- CLOUDINARY CONFIGURATION ---
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'equine_receipts',
+        allowed_formats: ['jpg', 'png', 'jpeg', 'pdf']
     }
 });
 const upload = multer({ storage: storage });
 
-// --- DATABASE SCHEMA ---
+
+// ==========================================
+// 🗄️ MONGODB DATABASE SCHEMAS
+// ==========================================
+
+// 1. ORDER SCHEMA
 const orderSchema = new mongoose.Schema({
     orderId: { type: String, unique: true },
     customer: {
         name: { type: String, default: "Guest" },
-        email: String
+        email: String,
+        address: String
     },       
     items: Array,           
     paymentMethod: String,
+    deliveryMethod: String,
+    subtotal: Number,
+    shippingFee: Number,
     total: Number,
-    delivery: { type: Number, default: 0 },
     status: { type: String, default: 'Pending Verification' }, 
     receiptImg: { type: String, default: null },           
     createdAt: { type: Date, default: Date.now }
 });
-
 const Order = mongoose.model('Order', orderSchema);
 
-// --- API ENDPOINTS ---
+// 2. CART SCHEMA (Fixes your Connection Error!)
+const cartSchema = new mongoose.Schema({
+    sessionId: { type: String, unique: true },
+    items: Array,
+    // Auto-deletes abandoned carts after 24 hours to save database space
+    updatedAt: { type: Date, default: Date.now, expires: 86400 } 
+});
+const Cart = mongoose.model('Cart', cartSchema);
 
-// 1. CREATE NEW ORDER (From Success Page)
-app.post('/api/orders', async (req, res) => {
+
+// ==========================================
+// 🌐 API ENDPOINTS
+// ==========================================
+
+// --- CART ENDPOINTS ---
+
+// GET CART
+app.get('/api/cart/:sessionId', async (req, res) => {
     try {
-        const orderData = req.body;
-        // Generate a clean ID if frontend didn't provide one
-        if(!orderData.orderId) {
-            orderData.orderId = 'EQ-' + Math.floor(1000 + Math.random() * 9000);
+        let cart = await Cart.findOne({ sessionId: req.params.sessionId });
+        if (!cart) {
+            cart = { sessionId: req.params.sessionId, items: [] };
         }
-
-        const newOrder = new Order(orderData);
-        await newOrder.save();
-        res.status(201).json({ success: true, order: newOrder });
+        res.status(200).json(cart);
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
-// 2. UPLOAD RECEIPT (From Success Page)
+// SAVE/UPDATE CART
+app.post('/api/cart/:sessionId', async (req, res) => {
+    try {
+        await Cart.findOneAndUpdate(
+            { sessionId: req.params.sessionId },
+            { items: req.body.items, updatedAt: Date.now() },
+            { upsert: true, new: true } // Creates it if it doesn't exist
+        );
+        res.status(200).json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// DELETE CART (Fired by success.html after purchase)
+app.delete('/api/cart/:sessionId', async (req, res) => {
+    try {
+        await Cart.deleteOne({ sessionId: req.params.sessionId });
+        res.status(200).json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+
+// --- ORDER ENDPOINTS ---
+
+// CREATE NEW ORDER
+app.post('/api/orders', async (req, res) => {
+    try {
+        const orderData = req.body;
+        // Generate a clean ID if frontend didn't provide one
+        if(!orderData.orderId) {
+            orderData.orderId = 'EQ-' + Math.floor(1000 + Math.random() * 9000) + '-' + Math.floor(100 + Math.random() * 900);
+        }
+
+        const newOrder = new Order(orderData);
+        await newOrder.save();
+        res.status(201).json({ success: true, orderId: orderData.orderId, order: newOrder });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+// UPLOAD RECEIPT (Using Cloudinary)
 app.post('/api/upload-receipt/:orderId', upload.single('receipt'), async (req, res) => {
     try {
         const { orderId } = req.params;
-        // Construct full URL so frontend can see images
-        const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`; 
+        // Grab the permanent URL that Cloudinary just generated
+        const fileUrl = req.file.path; 
 
         const updatedOrder = await Order.findOneAndUpdate(
             { orderId: orderId }, 
@@ -96,7 +165,7 @@ app.post('/api/upload-receipt/:orderId', upload.single('receipt'), async (req, r
     }
 });
 
-// 3. GET ALL ORDERS (For Admin Dashboard)
+// GET ALL ORDERS (Admin Dashboard)
 app.get('/api/admin/orders', async (req, res) => {
     try {
         const orders = await Order.find().sort({ createdAt: -1 });
@@ -106,7 +175,7 @@ app.get('/api/admin/orders', async (req, res) => {
     }
 });
 
-// 4. UPDATE ORDER STATUS (For Admin Dashboard Approve/Ship)
+// UPDATE ORDER STATUS (Admin Dashboard)
 app.put('/api/admin/orders/:orderId/status', async (req, res) => {
     try {
         const { status } = req.body;
@@ -121,7 +190,7 @@ app.put('/api/admin/orders/:orderId/status', async (req, res) => {
     }
 });
 
-// 5. TRACK ORDER (For Tracking Page)
+// TRACK ORDER
 app.get('/api/track/:orderId', async (req, res) => {
     try {
         const order = await Order.findOne({ orderId: req.params.orderId });
@@ -131,14 +200,16 @@ app.get('/api/track/:orderId', async (req, res) => {
             success: true, 
             status: order.status, 
             customerName: order.customer.name,
-            total: order.total
+            total: order.total,
+            orderId: order.orderId,
+            createdAt: order.createdAt
         });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
 });
 
-// --- SERVER & DATABASE INITIALIZATION ---
+// --- SERVER INITIALIZATION ---
 mongoose.connect(process.env.MONGO_URI)
     .then(() => {
         console.log("🟢 Connected to MongoDB");
