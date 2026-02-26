@@ -107,7 +107,20 @@ app.delete('/api/cart/:sessionId', async (req, res) => {
     }
 });
 
+// --- ADMIN ENDPOINTS ---
 
+app.post('/api/admin/login', (req, res) => {
+    const { password } = req.body;
+    // It checks your secure environment variable first. If testing locally, it falls back to 'equineadmin123'
+    const validPassword = process.env.ADMIN_PASSWORD || 'equineadmin123';
+    
+    if (password === validPassword) {
+        // Return a simple success token
+        res.status(200).json({ success: true, token: 'secure_admin_session_active' });
+    } else {
+        res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+});
 // --- ORDER ENDPOINTS ---
 
 app.post('/api/orders', async (req, res) => {
