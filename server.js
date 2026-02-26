@@ -7,7 +7,7 @@ const path = require('path');
 
 // Cloudinary for permanent image storage on Render
 const { v2: cloudinary } = require('cloudinary');
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const cloudinaryStoragePkg = require('multer-storage-cloudinary');
 
 const app = express();
 const PORT = process.env.PORT || 10000; 
@@ -32,20 +32,31 @@ app.use(cors({
 app.use(express.json()); 
 app.use(express.static(path.join(__dirname, 'public'))); 
 
-// --- CLOUDINARY CONFIGURATION ---
+// --- CLOUDINARY CONFIGURATION (Version-Proof Setup) ---
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const storage = new CloudinaryStorage({
-    cloudinary: cloudinary,
-    params: {
+let storage;
+// This safely checks if you have the newer package or the older package
+if (cloudinaryStoragePkg.CloudinaryStorage) {
+    storage = new cloudinaryStoragePkg.CloudinaryStorage({
+        cloudinary: cloudinary,
+        params: {
+            folder: 'equine_receipts',
+            allowed_formats: ['jpg', 'png', 'jpeg', 'pdf']
+        }
+    });
+} else {
+    storage = cloudinaryStoragePkg({
+        cloudinary: cloudinary,
         folder: 'equine_receipts',
-        allowed_formats: ['jpg', 'png', 'jpeg', 'pdf']
-    }
-});
+        allowedFormats: ['jpg', 'png', 'jpeg', 'pdf']
+    });
+}
+
 const upload = multer({ storage: storage });
 
 
@@ -73,7 +84,7 @@ const orderSchema = new mongoose.Schema({
 });
 const Order = mongoose.model('Order', orderSchema);
 
-// 2. CART SCHEMA (Fixes your Connection Error!)
+// 2. CART SCHEMA
 const cartSchema = new mongoose.Schema({
     sessionId: { type: String, unique: true },
     items: Array,
@@ -108,7 +119,7 @@ app.post('/api/cart/:sessionId', async (req, res) => {
         await Cart.findOneAndUpdate(
             { sessionId: req.params.sessionId },
             { items: req.body.items, updatedAt: Date.now() },
-            { upsert: true, new: true } // Creates it if it doesn't exist
+            { upsert: true, new: true }
         );
         res.status(200).json({ success: true });
     } catch (error) {
@@ -116,7 +127,7 @@ app.post('/api/cart/:sessionId', async (req, res) => {
     }
 });
 
-// DELETE CART (Fired by success.html after purchase)
+// DELETE CART 
 app.delete('/api/cart/:sessionId', async (req, res) => {
     try {
         await Cart.deleteOne({ sessionId: req.params.sessionId });
@@ -133,9 +144,8 @@ app.delete('/api/cart/:sessionId', async (req, res) => {
 app.post('/api/orders', async (req, res) => {
     try {
         const orderData = req.body;
-        // Generate a clean ID if frontend didn't provide one
         if(!orderData.orderId) {
-            orderData.orderId = 'EQ-' + Math.floor(1000 + Math.random() * 9000) + '-' + Math.floor(100 + Math.random() * 900);
+            orderData.orderId = 'EQ-' + Math.floor(1000 + Math.random() * 9000);
         }
 
         const newOrder = new Order(orderData);
@@ -146,12 +156,12 @@ app.post('/api/orders', async (req, res) => {
     }
 });
 
-// UPLOAD RECEIPT (Using Cloudinary)
+// UPLOAD RECEIPT
 app.post('/api/upload-receipt/:orderId', upload.single('receipt'), async (req, res) => {
     try {
         const { orderId } = req.params;
-        // Grab the permanent URL that Cloudinary just generated
-        const fileUrl = req.file.path; 
+        // Grab the permanent URL that Cloudinary just generated (fixes file system issues!)
+        const fileUrl = req.file.path || req.file.url; 
 
         const updatedOrder = await Order.findOneAndUpdate(
             { orderId: orderId }, 
