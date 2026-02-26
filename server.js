@@ -15,21 +15,8 @@ if (!fs.existsSync('uploads')) {
 }
 
 // --- PRODUCTION MIDDLEWARE ---
-const allowedOrigins = [
-    'http://localhost:3000', 
-    'http://127.0.0.1:5500', 
-    'https://equine-4ya0.onrender.com' // Your live URL
-];
-
-app.use(cors({
-    origin: function(origin, callback){
-        if(!origin) return callback(null, true);
-        if(allowedOrigins.indexOf(origin) === -1){
-            return callback(new Error('CORS Policy Blocked: Unauthorized Origin'), false);
-        }
-        return callback(null, true);
-    }
-}));
+// 🔓 Fully opened CORS so mobile phones and local testing won't be blocked!
+app.use(cors());
 
 app.use(express.json()); 
 app.use(express.static(path.join(__dirname, 'public'))); 
