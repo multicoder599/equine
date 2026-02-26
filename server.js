@@ -4,19 +4,21 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
-
-// Cloudinary for permanent image storage on Render
-const { v2: cloudinary } = require('cloudinary');
-const cloudinaryStoragePkg = require('multer-storage-cloudinary');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 10000; 
+
+// --- CREATE UPLOADS FOLDER IF IT DOESN'T EXIST ---
+if (!fs.existsSync('uploads')) {
+    fs.mkdirSync('uploads');
+}
 
 // --- PRODUCTION MIDDLEWARE ---
 const allowedOrigins = [
     'http://localhost:3000', 
     'http://127.0.0.1:5500', 
-    'https://equine-4ya0.onrender.com'
+    'https://equine-4ya0.onrender.com' // Your live URL
 ];
 
 app.use(cors({
@@ -31,32 +33,17 @@ app.use(cors({
 
 app.use(express.json()); 
 app.use(express.static(path.join(__dirname, 'public'))); 
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'))); // This allows images to be viewed!
 
-// --- CLOUDINARY CONFIGURATION (Version-Proof Setup) ---
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
+// --- STANDARD LOCAL IMAGE UPLOAD ENGINE ---
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/'); 
+    },
+    filename: (req, file, cb) => {
+        cb(null, 'receipt-' + Date.now() + path.extname(file.originalname));
+    }
 });
-
-let storage;
-// This safely checks if you have the newer package or the older package
-if (cloudinaryStoragePkg.CloudinaryStorage) {
-    storage = new cloudinaryStoragePkg.CloudinaryStorage({
-        cloudinary: cloudinary,
-        params: {
-            folder: 'equine_receipts',
-            allowed_formats: ['jpg', 'png', 'jpeg', 'pdf']
-        }
-    });
-} else {
-    storage = cloudinaryStoragePkg({
-        cloudinary: cloudinary,
-        folder: 'equine_receipts',
-        allowedFormats: ['jpg', 'png', 'jpeg', 'pdf']
-    });
-}
-
 const upload = multer({ storage: storage });
 
 
@@ -88,7 +75,6 @@ const Order = mongoose.model('Order', orderSchema);
 const cartSchema = new mongoose.Schema({
     sessionId: { type: String, unique: true },
     items: Array,
-    // Auto-deletes abandoned carts after 24 hours to save database space
     updatedAt: { type: Date, default: Date.now, expires: 86400 } 
 });
 const Cart = mongoose.model('Cart', cartSchema);
@@ -100,7 +86,6 @@ const Cart = mongoose.model('Cart', cartSchema);
 
 // --- CART ENDPOINTS ---
 
-// GET CART
 app.get('/api/cart/:sessionId', async (req, res) => {
     try {
         let cart = await Cart.findOne({ sessionId: req.params.sessionId });
@@ -113,7 +98,6 @@ app.get('/api/cart/:sessionId', async (req, res) => {
     }
 });
 
-// SAVE/UPDATE CART
 app.post('/api/cart/:sessionId', async (req, res) => {
     try {
         await Cart.findOneAndUpdate(
@@ -127,7 +111,6 @@ app.post('/api/cart/:sessionId', async (req, res) => {
     }
 });
 
-// DELETE CART 
 app.delete('/api/cart/:sessionId', async (req, res) => {
     try {
         await Cart.deleteOne({ sessionId: req.params.sessionId });
@@ -140,12 +123,11 @@ app.delete('/api/cart/:sessionId', async (req, res) => {
 
 // --- ORDER ENDPOINTS ---
 
-// CREATE NEW ORDER
 app.post('/api/orders', async (req, res) => {
     try {
         const orderData = req.body;
         if(!orderData.orderId) {
-            orderData.orderId = 'EQ-' + Math.floor(1000 + Math.random() * 9000);
+            orderData.orderId = 'EQ-' + Math.floor(1000 + Math.random() * 9000) + '-' + Math.floor(100 + Math.random() * 900);
         }
 
         const newOrder = new Order(orderData);
@@ -156,12 +138,12 @@ app.post('/api/orders', async (req, res) => {
     }
 });
 
-// UPLOAD RECEIPT
+// UPLOAD RECEIPT (Local Storage)
 app.post('/api/upload-receipt/:orderId', upload.single('receipt'), async (req, res) => {
     try {
         const { orderId } = req.params;
-        // Grab the permanent URL that Cloudinary just generated (fixes file system issues!)
-        const fileUrl = req.file.path || req.file.url; 
+        // Construct the URL to point to your own server's upload folder
+        const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`; 
 
         const updatedOrder = await Order.findOneAndUpdate(
             { orderId: orderId }, 
@@ -175,7 +157,6 @@ app.post('/api/upload-receipt/:orderId', upload.single('receipt'), async (req, r
     }
 });
 
-// GET ALL ORDERS (Admin Dashboard)
 app.get('/api/admin/orders', async (req, res) => {
     try {
         const orders = await Order.find().sort({ createdAt: -1 });
@@ -185,7 +166,6 @@ app.get('/api/admin/orders', async (req, res) => {
     }
 });
 
-// UPDATE ORDER STATUS (Admin Dashboard)
 app.put('/api/admin/orders/:orderId/status', async (req, res) => {
     try {
         const { status } = req.body;
@@ -200,7 +180,6 @@ app.put('/api/admin/orders/:orderId/status', async (req, res) => {
     }
 });
 
-// TRACK ORDER
 app.get('/api/track/:orderId', async (req, res) => {
     try {
         const order = await Order.findOne({ orderId: req.params.orderId });
